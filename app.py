@@ -252,7 +252,7 @@ _SENT_RE   = re.compile(r"(?<=[.!?])\s+")
 _ACRONYM_RE = re.compile(r"\b[A-Z]{2,5}\b")
 
 _REQUEST_RE = re.compile(
-    r'^\s*(please\s+)?(what|how|why|when|can you|could you|help me|i need|i want|'
+    r'^\s*(please\s+|also\s+)?(what|how|why|when|can you|could you|help me|i need|i want|'
     r'tell me|look at|review|summarize|list|analyze|build|plan|check|explain|find|'
     r'show|give|create|make|write|compare|evaluate|assess)\b',
     re.I
@@ -298,6 +298,9 @@ class PromptAnalyzer:
             if domains else False
         )
 
+        summary, key_facts, norm_sents = self._summarize(raw)
+        multi_task, task_sentences = self._detect_tasks(norm_sents)
+
         return {
             # Structural presence flags (used by badge display)
             "has_role":          bool(_ROLE_PAT.search(t)),
@@ -314,6 +317,11 @@ class PromptAnalyzer:
             "is_short":     len(w) < 10,
             "is_long":      len(t) > 2000,
             "core_subject": self._core_subject(t),
+            # Summarization & multi-task
+            "summary":        summary,
+            "key_facts":      key_facts,
+            "multi_task":     multi_task,
+            "task_sentences": task_sentences,
         }
 
     def _task_type(self, text: str) -> str:
@@ -356,6 +364,103 @@ class PromptAnalyzer:
         # Take up to first sentence or 120 chars
         first = _SENT_RE.split(cleaned)[0].strip()
         return first[:120]
+
+    def _summarize(self, raw: str) -> tuple[str, list[str], list[str]]:
+        """Clean, deduplicate, and summarize a raw prompt.
+
+        Returns:
+            summary_text: Up to 4 best sentences joined with a space.
+            key_facts: Numeric/currency sentences not already in the summary.
+            normalized_sentences: All deduplicated normalized sentences (for _detect_tasks).
+        """
+        # Step 1: Sentence split using existing module-level _SENT_RE
+        raw_sents = [s.strip() for s in _SENT_RE.split(raw) if s.strip()]
+        if not raw_sents:
+            return raw.strip(), [], []
+
+        # Step 2: Normalize each sentence
+        normalized: list[str] = []
+        for s in raw_sents:
+            s = re.sub(r' {2,}', ' ', s)                             # collapse spaces
+            s = re.sub(r'\.\.+', '.', s)                             # fix ".."
+            s = re.sub(r',,+', ',', s)                               # fix ",,"
+            s = re.sub(r'\b(\w+)\s+\1\b', r'\1', s, flags=re.I)     # "the the" → "the"
+            s = s.strip()
+            if s:
+                normalized.append(s)
+
+        # Step 3: Deduplicate — keep sentences with similarity ≤ 0.85 vs all already kept
+        kept: list[str] = []
+        for s in normalized:
+            is_dupe = any(
+                difflib.SequenceMatcher(None, s.lower(), k.lower()).ratio() > 0.85
+                for k in kept
+            )
+            if not is_dupe:
+                kept.append(s)
+
+        # Step 4: Select up to 4 summary sentences (~400 char budget)
+        # Both list (order) and set (O(1) dedup across priority passes)
+        selected: list[str] = []
+        selected_set: set[str] = set()
+
+        def _add(s: str) -> bool:
+            """Add s if not already selected and budget not exhausted."""
+            if s in selected_set:
+                return False
+            if len(selected) >= 4 or sum(len(x) for x in selected) >= 400:
+                return False
+            selected.append(s)
+            selected_set.add(s)
+            return True
+
+        # P1: Always include first sentence
+        if kept:
+            _add(kept[0])
+
+        # P2: One numeric/currency sentence (save remaining for key_facts)
+        _kf_re = re.compile(
+            r'\$\d|[\d,]+\s*(point|limit|month|week|spend|mile|reward|apr|bonus)',
+            re.I
+        )
+        numeric_added = 0
+        for s in kept:
+            if numeric_added >= 1:
+                break
+            if re.search(r'[$\d]', s) and _add(s):
+                numeric_added += 1
+
+        # P3: Sentences containing any domain keyword (skip key-fact sentences)
+        domain_kws = {kw for kw, _ in _DOMAIN_SIGNALS}
+        for s in kept:
+            if _kf_re.search(s):
+                continue
+            if any(kw in s.lower() for kw in domain_kws):
+                _add(s)
+
+        # P4: Fill remaining slots with any kept sentence in order (skip key-fact sentences)
+        for s in kept:
+            if not _kf_re.search(s):
+                _add(s)
+
+        summary_text = " ".join(selected)
+
+        # Step 5: Key facts — numeric sentences NOT already in the summary
+        key_facts = [s for s in kept if _kf_re.search(s) and s not in selected_set]
+
+        return summary_text, key_facts, kept
+
+    def _detect_tasks(self, sents: list[str]) -> tuple[bool, list[str]]:
+        """Detect whether sents represent multiple distinct requests.
+
+        Returns:
+            multi_task: True if 2+ request sentences detected.
+            task_sentences: Up to 5 sentences that look like requests.
+        """
+        task_sents = [s for s in sents if _REQUEST_RE.search(s)]
+        task_sents = task_sents[:5]
+        multi_task = len(task_sents) >= 2
+        return multi_task, task_sents
 
 # ---------------------------------------------------------------------------
 # PromptBuilder  — constructs a genuinely improved, specific prompt
