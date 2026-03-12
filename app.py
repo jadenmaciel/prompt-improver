@@ -534,12 +534,31 @@ class PromptBuilder:
     def _context(self, raw: str, a: dict, aud: str) -> str:
         lines = []
 
-        # 1. Use summarized text from PromptAnalyzer or fall back to core_subject
-        # Note: task_type and verb_map are no longer needed here; removed.
-        summary = a.get("summary") or a.get("core_subject", raw.strip()[:100])
-        lines.append(summary)
+        # 1. Structured goal line — never echoes raw input verbatim
+        subject = self._clean(a.get("core_subject", raw.strip()[:120]))
+        if a.get("multi_task"):
+            lines.append(f"Working on: {subject} \u2014 across multiple related goals.")
+        else:
+            verb_map = {
+                "build":   "build",    "design":  "design",  "explain": "understand",
+                "compare": "evaluate", "fix":     "fix",      "analyze": "analyze",
+                "write":   "write",    "list":    "list",
+            }
+            verb = verb_map.get(a["task_type"], "work on")
+            lines.append(f"The goal is to {verb}: {subject}.")
         if a.get("key_facts"):
             lines.append("Key details: " + " ".join(a["key_facts"]))
+        else:
+            # Numeric facts may be in summary (not key_facts) for short prompts.
+            # Surface them here so important numbers never disappear from context.
+            summary_sents = [s.strip() for s in (a.get("summary") or "").split(". ") if s.strip()]
+            fact_sents = [
+                s for s in summary_sents
+                if _FACT_RE.search(s) and _FACT_NOUN_RE.search(s)
+                and re.sub(r'[.!?,;:]+$', '', s.strip()) != subject
+            ]
+            if fact_sents:
+                lines.append("Key details: " + " ".join(fact_sents[:2]))
 
         # 2. Inject domain knowledge for technical domains
         domain_context = {
@@ -574,8 +593,24 @@ class PromptBuilder:
 
     def _task(self, raw: str, a: dict) -> str:
         if a.get("multi_task"):
-            task_sents = a.get("task_sentences", [])
+            task_sents = list(a.get("task_sentences", []))
             if task_sents:  # Guard: fall through to single template if list is empty
+                # Auto-inject finance review when facts exist but no finance task was requested
+                _fin_kws = ("amex", "card", "financ", "credit", "point", "limit", "budget")
+                domain = a["domains"][0] if a["domains"] else "general"
+                has_finance_task = any(
+                    kw in s.lower() for s in task_sents for kw in _fin_kws
+                )
+                # Check raw prompt directly — numeric facts may be in summary, not key_facts
+                raw_sents = [s.strip() for s in _SENT_RE.split(raw) if s.strip()]
+                has_finance_facts = any(
+                    _FACT_RE.search(s) and _FACT_NOUN_RE.search(s) for s in raw_sents
+                )
+                if domain == "finance" and has_finance_facts and not has_finance_task:
+                    task_sents.append(
+                        "Review the financial details (card limits, points, spending targets)"
+                        " and explain how they connect to the overall plan."
+                    )
                 numbered = "\n".join(
                     f"{i+1}. {s.strip().rstrip('.')}."
                     for i, s in enumerate(task_sents)
@@ -678,7 +713,7 @@ class PromptBuilder:
             return (
                 "Return a markdown document with:\n"
                 "- Section 1: Summary of the current situation\n"
-                "- Section 2: Action plan (prioritized steps, grouped by timeframe if applicable)\n"
+                "- Section 2: Action plan \u2014 group into: this week / this month / later\n"
                 f"- Section 3: {section3}\n"
                 "- Section 4: Integrated recommendations and risks"
             )
