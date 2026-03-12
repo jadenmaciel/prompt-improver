@@ -505,7 +505,9 @@ class PromptBuilder:
 
         body = "\n\n".join(secs)
         if analysis.get("is_long"):
-            body += "\n\n⚠ Original prompt was very long; some elements were truncated."
+            summary_len = len(analysis.get("summary", ""))
+            if summary_len < len(raw.strip()) * 0.4:
+                body += "\n\n⚠ Original prompt was very long; key points were summarized above."
         return body + f"\n\n{USAGE_NOTE}"
 
     # ── Role ──────────────────────────────────────────────────────────
@@ -531,17 +533,12 @@ class PromptBuilder:
     def _context(self, raw: str, a: dict, aud: str) -> str:
         lines = []
 
-        # 1. Summarize what the user is actually trying to do
-        subject  = a.get("core_subject", raw.strip()[:100])
-        task_type = a["task_type"]
-        verb_map = {
-            "build":   "build", "design": "design", "explain": "understand",
-            "compare": "compare", "fix": "fix a problem with",
-            "analyze": "analyze", "write": "write", "list": "find",
-            "general": "work on",
-        }
-        verb = verb_map.get(task_type, "work on")
-        lines.append(f"The goal is to {verb}: {subject}.")
+        # 1. Use summarized text from PromptAnalyzer or fall back to core_subject
+        # Note: task_type and verb_map are no longer needed here; removed.
+        summary = a.get("summary") or a.get("core_subject", raw.strip()[:100])
+        lines.append(summary)
+        if a.get("key_facts"):
+            lines.append("Key details: " + " ".join(a["key_facts"]))
 
         # 2. Inject domain knowledge for technical domains
         domain_context = {
@@ -575,6 +572,15 @@ class PromptBuilder:
     # ── Task ──────────────────────────────────────────────────────────
 
     def _task(self, raw: str, a: dict) -> str:
+        if a.get("multi_task"):
+            task_sents = a.get("task_sentences", [])
+            if task_sents:  # Guard: fall through to single template if list is empty
+                numbered = "\n".join(
+                    f"{i+1}. {s.strip().rstrip('.')}."
+                    for i, s in enumerate(task_sents)
+                )
+                return numbered
+
         subject   = a.get("core_subject", raw.strip()[:120])
         task_type = a["task_type"]
         tech      = a.get("tech_stack", [])
@@ -665,6 +671,17 @@ class PromptBuilder:
             expanded = _FMT_EXPANSIONS.get(key) or _FMT_EXPANSIONS.get(key.rstrip("s"))
             return expanded if expanded else explicit_fmt
 
+        if a.get("multi_task"):
+            domain = a["domains"][0] if a["domains"] else "general"
+            section3 = _MULTITASK_SECTION3.get(domain, _MULTITASK_SECTION3["general"])
+            return (
+                "Return a markdown document with:\n"
+                "- Section 1: Summary of the current situation\n"
+                "- Section 2: Action plan (prioritized steps, grouped by timeframe if applicable)\n"
+                f"- Section 3: {section3}\n"
+                "- Section 4: Integrated recommendations and risks"
+            )
+
         task_type = a["task_type"]
         domain    = a["domains"][0] if a["domains"] else "general"
 
@@ -712,12 +729,27 @@ class PromptBuilder:
     def _constraints(self, raw: str, a: dict, tone: str) -> str:
         parts = []
 
-        # Preserve explicit constraints from original
+        # Preserve explicit constraints from original (sentence-level fact/directive split)
         if a["has_constraints"]:
-            m = _CON_PAT.search(raw)
-            if m:
-                snippet = raw[m.start():m.start()+150].split("\n")[0].strip()
-                parts.append(f"From original prompt: {snippet}")
+            raw_sents = [s.strip() for s in _SENT_RE.split(raw) if s.strip()]
+            directive_sentences: list[str] = []
+            for s in raw_sents:
+                is_fact = bool(_FACT_RE.search(s)) and bool(_FACT_NOUN_RE.search(s))
+                is_directive = bool(_DIRECTIVE_RE.search(s))
+                if is_directive and not is_fact:
+                    directive_sentences.append(s[:120])
+                elif is_directive and is_fact:
+                    # Both: extract only the directive clause.
+                    # The 100-char slice is applied BEFORE split(",")[0], so output is ≤ 100 chars
+                    # even when no comma is present.
+                    m = _DIRECTIVE_RE.search(s)
+                    if m:
+                        clause = s[m.start():m.start() + 100].split(",")[0].strip()
+                        directive_sentences.append(clause)
+                if len(directive_sentences) >= 3:
+                    break
+            for sent in directive_sentences:
+                parts.append(f"From original prompt: {sent}")
 
         # User-supplied tone
         if tone:
