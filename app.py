@@ -220,11 +220,11 @@ _DOMAIN_SIGNALS: list[tuple[str, str]] = [
     # writing
     ("essay",       "writing"), ("blog",        "writing"), ("article",     "writing"),
     ("content",     "writing"), ("story",       "writing"), ("copywriting", "writing"),
-    # finance (placed before business so finance-specific signals win ties over generic business signals)
+    # finance (cluster has more finance-specific keywords than business cluster, so finance wins count-based ties)
     ("finances",        "finance"), ("budget",         "finance"), ("spending",      "finance"),
     ("income",          "finance"), ("expenses",       "finance"), ("cash flow",     "finance"),
     ("credit card",     "finance"), ("amex",           "finance"), ("visa card",     "finance"),
-    ("mastercard",      "finance"), (" apr ",          "finance"), ("points",        "finance"),
+    ("mastercard",      "finance"), ("apr",            "finance"), ("points",        "finance"),
     ("miles",           "finance"), ("rewards card",   "finance"), ("signup bonus",  "finance"),
     ("side hustle",     "finance"), ("vending",        "finance"), ("net worth",     "finance"),
     ("savings account", "finance"), ("student loan",   "finance"), ("credit limit",  "finance"),
