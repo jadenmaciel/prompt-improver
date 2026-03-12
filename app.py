@@ -252,7 +252,8 @@ _SENT_RE   = re.compile(r"(?<=[.!?])\s+")
 _ACRONYM_RE = re.compile(r"\b[A-Z]{2,5}\b")
 
 _REQUEST_RE = re.compile(
-    r'^\s*(please\s+|also\s+)?(what|how|why|when|can you|could you|help me|i need|i want|'
+    r'^\s*(?:(?:first|also|additionally|furthermore|second|finally|lastly)[,\s]+)?'
+    r'(?:please\s+)?(what|how|why|when|can you|could you|help me|i need|i want|'
     r'tell me|look at|review|summarize|list|analyze|build|plan|check|explain|find|'
     r'show|give|create|make|write|compare|evaluate|assess)\b',
     re.I
