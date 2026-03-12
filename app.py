@@ -582,6 +582,8 @@ class PromptBuilder:
         # 4. Audience
         if aud:
             lines.append(f"Target audience: {aud}.")
+        elif domain in ("finance", "business"):
+            lines.append("Assume a non-technical business owner audience — plain language, no jargon.")
         elif a["is_technical"]:
             lines.append("Assume a technical developer audience familiar with the relevant concepts.")
         else:
@@ -611,8 +613,11 @@ class PromptBuilder:
                         "Review the financial details (card limits, points, spending targets)"
                         " and explain how they connect to the overall plan."
                     )
+                def _clean_task(s: str) -> str:
+                    s = re.sub(r'^(?:(?:first|also|additionally|second|finally|lastly)[,\s]+)?please\s+', '', s.strip(), flags=re.I)
+                    return (s[0].upper() + s[1:]) if s else s
                 numbered = "\n".join(
-                    f"{i+1}. {s.strip().rstrip('.')}."
+                    f"{i+1}. {_clean_task(s).rstrip('.')}."
                     for i, s in enumerate(task_sents)
                 )
                 return numbered
