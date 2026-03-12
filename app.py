@@ -7,6 +7,7 @@ Run: python3.12 app.py
 
 import platform
 import re
+import difflib
 import tkinter as tk
 from tkinter import messagebox
 
@@ -162,6 +163,11 @@ _DOMAIN_ROLES: dict[str, tuple[str, str]] = {
                    "education and teaching"),
     "writing":    ("a professional writer and editor with expertise in clear, compelling communication",
                    "writing and content"),
+    "finance": (
+        "an experienced small-business and personal-finance coach who helps people "
+        "plan side hustles, manage budgets, and optimize credit-card and rewards strategies",
+        "personal finance and small business"
+    ),
     "business":   ("a strategic business consultant with expertise in product, growth, and operations",
                    "business strategy"),
     "general":    ("a knowledgeable and thoughtful assistant",
@@ -214,6 +220,14 @@ _DOMAIN_SIGNALS: list[tuple[str, str]] = [
     # writing
     ("essay",       "writing"), ("blog",        "writing"), ("article",     "writing"),
     ("content",     "writing"), ("story",       "writing"), ("copywriting", "writing"),
+    # finance (placed before business so finance-specific signals win ties over generic business signals)
+    ("finances",        "finance"), ("budget",         "finance"), ("spending",      "finance"),
+    ("income",          "finance"), ("expenses",       "finance"), ("cash flow",     "finance"),
+    ("credit card",     "finance"), ("amex",           "finance"), ("visa card",     "finance"),
+    ("mastercard",      "finance"), (" apr ",          "finance"), ("points",        "finance"),
+    ("miles",           "finance"), ("rewards card",   "finance"), ("signup bonus",  "finance"),
+    ("side hustle",     "finance"), ("vending",        "finance"), ("net worth",     "finance"),
+    ("savings account", "finance"), ("student loan",   "finance"), ("credit limit",  "finance"),
     # business
     ("strategy",    "business"),("marketing",   "business"),("revenue",     "business"),
     ("startup",     "business"),("growth",      "business"),("product",     "business"),
@@ -236,6 +250,33 @@ _FMT_PAT   = re.compile(r"\b(json|markdown|table|bullet|bulleted|list|format|sch
 _CON_PAT   = re.compile(r"\b(don'?t|avoid|must|limit|max|only|no more than|keep it|without|exclude|do not|refrain|less than|at most)\b", re.I)
 _SENT_RE   = re.compile(r"(?<=[.!?])\s+")
 _ACRONYM_RE = re.compile(r"\b[A-Z]{2,5}\b")
+
+_REQUEST_RE = re.compile(
+    r'^\s*(please\s+)?(what|how|why|when|can you|could you|help me|i need|i want|'
+    r'tell me|look at|review|summarize|list|analyze|build|plan|check|explain|find|'
+    r'show|give|create|make|write|compare|evaluate|assess)\b',
+    re.I
+)
+
+_MULTITASK_SECTION3: dict[str, str] = {
+    "finance":   "Financial review (card details, budget, key numbers)",
+    "business":  "Business analysis (market, operations, strategy)",
+    "backend":   "Technical review (architecture, APIs, data layer)",
+    "frontend":  "UI/UX review (components, performance, accessibility)",
+    "devops":    "Infrastructure review (deployment, reliability, costs)",
+    "ai_ml":     "Model and data review (approach, evaluation, risks)",
+    "security":  "Security review (threats, vulnerabilities, mitigations)",
+    "data":      "Data review (sources, quality, pipeline)",
+    "mobile":    "Platform review (iOS/Android, performance, UX)",
+    "education": "Learning path review (resources, milestones, gaps)",
+    "writing":   "Content review (tone, structure, audience fit)",
+    "general":   "Deep dive on each subtopic",
+}
+
+# Used by _constraints() for fact vs. directive classification
+_FACT_RE      = re.compile(r'[$\d]')
+_FACT_NOUN_RE = re.compile(r'\b(limit|points|month|week|spend|miles|reward|budget|income|apr|bonus)\b', re.I)
+_DIRECTIVE_RE = re.compile(r"\b(must|should|don'?t|do not|avoid|only|no more than|please don'?t|refrain|exclude|keep it|limit to)\b", re.I)
 
 # ---------------------------------------------------------------------------
 # PromptAnalyzer  — extracts rich intent from raw text
