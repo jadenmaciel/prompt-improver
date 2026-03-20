@@ -174,6 +174,59 @@ _DOMAIN_ROLES: dict[str, tuple[str, str]] = {
                    "general"),
 }
 
+# Task type → role activity modifier (used by _synthesize_role)
+_TASK_ROLE_MODIFIERS: dict[str, str] = {
+    "build":   "who architects and builds production-quality solutions",
+    "design":  "who designs systems and creates technical blueprints",
+    "explain": "who explains complex topics clearly with concrete examples",
+    "compare": "who evaluates trade-offs and provides clear recommendations",
+    "fix":     "who diagnoses and resolves issues systematically",
+    "analyze": "who performs thorough analysis and identifies improvements",
+    "write":   "who writes clear, polished, audience-appropriate content",
+    "list":    "who provides comprehensive, well-organized information",
+}
+
+# Niche patterns: regex on core_subject → niche expertise string
+_NICHE_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"\bscrap", re.I),              "web scraping and data extraction"),
+    (re.compile(r"\brate.?limit", re.I),        "API rate limiting and throttling"),
+    (re.compile(r"\bcrawl", re.I),              "web crawling and indexing"),
+    (re.compile(r"\bauth(?:entication|orization)?\b", re.I), "authentication and access control"),
+    (re.compile(r"\bchat.?bot\b", re.I),        "conversational AI and chatbot design"),
+    (re.compile(r"\breal.?time\b", re.I),       "real-time systems and event streaming"),
+    (re.compile(r"\bcach(?:e|ing)\b", re.I),    "caching strategies and performance"),
+    (re.compile(r"\btest(?:ing|s)?\b", re.I),   "testing strategies and quality assurance"),
+    (re.compile(r"\bperformance\b", re.I),      "performance optimization and profiling"),
+    (re.compile(r"\bmigrat", re.I),             "data migration and schema evolution"),
+    (re.compile(r"\bgame\b", re.I),             "game logic and interactive systems"),
+    (re.compile(r"\bpayment\b", re.I),          "payment processing and financial integrations"),
+    (re.compile(r"\bsearch\b", re.I),           "search systems and information retrieval"),
+    (re.compile(r"\bnotif", re.I),              "notification systems and messaging"),
+    (re.compile(r"\bmonitor", re.I),            "monitoring, alerting, and observability"),
+    (re.compile(r"\bCLI\b|command.?line", re.I), "command-line tools and terminal interfaces"),
+    (re.compile(r"\bAPI\b", re.I),              "API design and integration"),
+    (re.compile(r"\bdashboard\b", re.I),        "data visualization and dashboard design"),
+    (re.compile(r"\bpipeline\b", re.I),         "data pipelines and workflow orchestration"),
+    (re.compile(r"\boptimiz", re.I),            "optimization and efficiency improvements"),
+]
+
+# Task type → reasoning guidance injected into [TASK] section
+_REASONING_GUIDANCE: dict[str, str] = {
+    "build":   "Think through this systematically: requirements first, then architecture, then implementation details.",
+    "design":  "Think through this systematically: clarify goals, explore options, evaluate trade-offs, then recommend.",
+    "fix":     "Before proposing a fix, reason through the possible root causes and rule them out one by one.",
+    "analyze": "Work through this methodically: gather observations, identify patterns, then form conclusions.",
+    "compare": "Evaluate each option against the same criteria before making a recommendation.",
+}
+
+# Stronger fallback constraints (replaces the weak "Be specific and actionable")
+_STRONGER_DEFAULTS: list[str] = [
+    "Provide concrete examples, not abstract descriptions.",
+    "If you are unsure about something, say so rather than guessing.",
+    "Focus on practical, immediately actionable advice.",
+    "Before finalizing, verify your answer is internally consistent and complete.",
+]
+
 # Domain detection: keyword → domain key
 _DOMAIN_SIGNALS: list[tuple[str, str]] = [
     # ai_ml first — high priority
@@ -239,7 +292,12 @@ _DESIGN_RE   = re.compile(r"\b(design|architect|plan|structure|outline|sketch)\b
 _EXPLAIN_RE  = re.compile(r"\b(explain|describe|what is|how does|how do|teach me|show me|help me understand|clarify)\b", re.I)
 _COMPARE_RE  = re.compile(r"\b(compare|versus|vs\.?|difference between|which is better|pros and cons)\b", re.I)
 _FIX_RE      = re.compile(r"\b(fix|debug|solve|troubleshoot|why (is|does|isn't|doesn't)|error|bug|broken|not working)\b", re.I)
-_ANALYZE_RE  = re.compile(r"\b(analyze|analyse|review|audit|evaluate|assess|critique|improve my|optimize)\b", re.I)
+_ANALYZE_RE  = re.compile(
+    r"\b(check|look at|look through|look throughout|look over|look around|look into|"
+    r"go through|examine|inspect|"
+    r"analyze|analyse|review|audit|evaluate|assess|critique|improve my|optimize)\b",
+    re.I
+)
 _WRITE_RE    = re.compile(r"\b(write|draft|generate|compose|craft)\b", re.I)
 _LIST_RE     = re.compile(r"\b(list|enumerate|give me|show me|what are the)\b", re.I)
 
@@ -256,6 +314,16 @@ _REQUEST_RE = re.compile(
     r'(?:please\s+)?(what|how|why|when|can you|could you|help me|i need|i want|'
     r'tell me|look at|review|summarize|list|analyze|build|plan|check|explain|find|'
     r'show|give|create|make|write|compare|evaluate|assess)\b',
+    re.I
+)
+
+_CHECKLIST_PAT = re.compile(
+    r"\b(checklist|check list|action items)\b", re.I
+)
+
+_ARTIFACT_RE = re.compile(
+    r"\b(project|repo|repository|codebase|code base|my code|the code|"
+    r"this file|my files|source code|the app|my app|the script)\b",
     re.I
 )
 
@@ -356,10 +424,13 @@ class PromptAnalyzer:
 
     def _core_subject(self, text: str) -> str:
         """Best-effort extraction of the main subject phrase."""
-        # Strip leading imperative verb
+        # Strip leading filler / vague imperative verbs (multi-word phrases first)
         cleaned = re.sub(
-            r"^(make|build|create|design|write|explain|compare|fix|debug|"
-            r"analyze|analyse|help me|can you|please|i want to|i need to)\s+",
+            r"^(?:(?:take\s+a\s+look\s+at|look\s+(?:at|through(?:out)?|over|around|into)|"
+            r"tell\s+me\s+about|show\s+me|find\s+out|figure\s+out|go\s+through)\s+|"
+            r"(?:make|build|create|design|write|explain|compare|fix|debug|"
+            r"analyze|analyse|help\s+me|can\s+you|please|i\s+want\s+to|i\s+need\s+to|"
+            r"check|see|review|examine|inspect)\s+)",
             "", text.strip(), flags=re.I,
         )
         # Take up to first sentence or 120 chars
@@ -481,6 +552,7 @@ _FMT_EXPANSIONS: dict[str, str] = {
     "steps":    "Numbered step-by-step instructions. Each step is a single, concrete action.",
     "step":     "Numbered step-by-step instructions. Each step is a single, concrete action.",
     "summary":  "A concise executive summary: 3–5 bullet points covering the key points.",
+    "checklist": "A prioritized actionable checklist using Markdown task boxes [ ].",
 }
 
 
@@ -491,25 +563,50 @@ class PromptBuilder:
         aud    = meta.get("audience",   "").strip()
         fmt    = meta.get("output_fmt", "").strip()
         tone   = meta.get("tone",       "").strip()
+        mode   = meta.get("mode",       "").strip().lower()
 
-        secs = []
-        secs.append(f"[ROLE / PERSONA]\n{self._role(analysis, model)}")
-        secs.append(f"[CONTEXT]\n{self._context(raw, analysis, aud)}")
-        secs.append(f"[TASK]\n{self._task(raw, analysis)}")
+        # Intent-based checklist override — takes priority over dropdown selection
+        if _CHECKLIST_PAT.search(raw):
+            fmt = "checklist"
+
+        # Infer mode from is_technical when not explicitly provided
+        if mode not in ("coding", "general"):
+            mode = "coding" if analysis.get("is_technical") else "general"
+
+        # Accumulate sections as (display_header, xml_tag, content) tuples
+        sec_tuples: list[tuple[str, str, str]] = []
+
+        # Always include role — either synthesized or acknowledging user's existing role
+        sec_tuples.append(("ROLE / PERSONA", "role", self._role(analysis, model)))
+        sec_tuples.append(("CONTEXT", "context", self._context(raw, analysis, aud)))
+        sec_tuples.append(("TASK", "task", self._task(raw, analysis, mode)))
 
         inp = self._input_desc(raw, analysis)
         if inp:
-            secs.append(f"[INPUT]\n{inp}")
+            sec_tuples.append(("INPUT", "input", inp))
 
-        secs.append(f"[OUTPUT FORMAT]\n{self._format(analysis, fmt)}")
-        secs.append(f"[CONSTRAINTS & STYLE]\n{self._constraints(raw, analysis, tone)}")
+        sec_tuples.append(("OUTPUT FORMAT", "output_format", self._format(analysis, fmt, mode, raw)))
 
-        body = "\n\n".join(secs)
+        examples = self._examples(analysis)
+        if examples:
+            sec_tuples.append(("EXAMPLES & DEMONSTRATION", "examples", examples))
+
+        sec_tuples.append(("CONSTRAINTS & STYLE", "constraints", self._constraints(raw, analysis, tone, mode)))
+
+        # Format sections — XML tags for Claude, bracket headers otherwise
+        use_xml = "claude" in model.lower() if model else False
+        if use_xml:
+            body = "\n\n".join(f"<{tag}>\n{content}\n</{tag}>" for _, tag, content in sec_tuples)
+        else:
+            body = "\n\n".join(f"[{header}]\n{content}" for header, _, content in sec_tuples)
         if analysis.get("is_long"):
             summary_len = len(analysis.get("summary", ""))
             if summary_len < len(raw.strip()) * 0.4:
                 body += "\n\n⚠ Original prompt was very long; key points were summarized above."
-        return body + f"\n\n{USAGE_NOTE}"
+        # Final cleanup: remove double periods and collapse extra spaces
+        body = re.sub(r'\.\.+', '.', body)
+        body = re.sub(r' {2,}', ' ', body)
+        return body
 
     # ── Role ──────────────────────────────────────────────────────────
 
@@ -517,17 +614,47 @@ class PromptBuilder:
         if a["has_role"]:
             return "(role already specified in your prompt — preserved as-is)"
 
-        primary_domain = a["domains"][0] if a["domains"] else "general"
-        role_desc, _ = _DOMAIN_ROLES.get(primary_domain, _DOMAIN_ROLES["general"])
-
-        # Enrich with specific tech stack if available
-        tech = a.get("tech_stack", [])
-        if tech and primary_domain not in ("education", "writing", "business", "general"):
-            tech_str = ", ".join(tech[:3])
-            role_desc = role_desc.rstrip(".") + f", with hands-on experience in {tech_str}"
-
+        role_desc = self._synthesize_role(a)
         suffix = f", optimized for use with {model}" if model else ""
         return f"You are {role_desc}{suffix}."
+
+    def _synthesize_role(self, a: dict) -> str:
+        """Build a specific role from domain + task_type + tech_stack + subject niche."""
+        primary_domain = a["domains"][0] if a["domains"] else "general"
+        task_type = a.get("task_type", "general")
+        tech = a.get("tech_stack", [])
+        subject = a.get("core_subject", "")
+
+        _, domain_label = _DOMAIN_ROLES.get(primary_domain, _DOMAIN_ROLES["general"])
+        task_mod = _TASK_ROLE_MODIFIERS.get(task_type, "")
+
+        # Build the role description in layers
+        if primary_domain == "general" and not tech and task_type == "general":
+            # Truly generic prompt — use simple fallback
+            return _DOMAIN_ROLES["general"][0]
+
+        # Base: "a senior {domain} specialist {task_modifier}"
+        if task_mod:
+            role = f"a senior {domain_label} specialist {task_mod}"
+        else:
+            # No task modifier — fall back to domain role description
+            role = _DOMAIN_ROLES.get(primary_domain, _DOMAIN_ROLES["general"])[0]
+
+        # Tech specialization
+        if tech and primary_domain not in ("education", "writing", "business", "general"):
+            tech_str = ", ".join(tech[:3])
+            role += f", with deep expertise in {tech_str}"
+
+        # Niche from core_subject
+        if subject:
+            for pat, niche in _NICHE_PATTERNS:
+                if pat.search(subject):
+                    # Avoid redundancy with tech stack
+                    if not any(t.lower() in niche.lower() for t in tech):
+                        role += f" and specific experience with {niche}"
+                    break
+
+        return role
 
     # ── Context ───────────────────────────────────────────────────────
 
@@ -535,7 +662,7 @@ class PromptBuilder:
         lines = []
 
         # 1. Structured goal line — never echoes raw input verbatim
-        subject = self._clean(a.get("core_subject", raw.strip()[:120]))
+        subject = self._clean(self._clean_subject(raw, a))
         if a.get("multi_task"):
             lines.append(f"Working on: {subject} \u2014 across multiple related goals.")
         else:
@@ -560,19 +687,11 @@ class PromptBuilder:
             if fact_sents:
                 lines.append("Key details: " + " ".join(fact_sents[:2]))
 
-        # 2. Inject domain knowledge for technical domains
-        domain_context = {
-            "backend":  "This is a backend engineering task involving server-side code, APIs, or infrastructure.",
-            "devops":   "This is a DevOps/infrastructure task involving deployment, cloud services, or automation.",
-            "frontend": "This is a frontend development task involving UI components, browser rendering, or user experience.",
-            "ai_ml":    "This is an AI/ML task involving language models, model behavior, or intelligent system design.",
-            "security": "This is a security task — prioritize safety, avoid harmful patterns, and flag potential risks.",
-            "data":     "This is a data engineering or analytics task involving data processing, modeling, or visualization.",
-            "mobile":   "This is a mobile development task targeting iOS, Android, or cross-platform environments.",
-        }
+        # 2. Domain context — label only, subject is already in the goal line
         domain = a["domains"][0] if a["domains"] else "general"
-        if domain in domain_context:
-            lines.append(domain_context[domain])
+        if domain != "general":
+            _, domain_label = _DOMAIN_ROLES.get(domain, _DOMAIN_ROLES["general"])
+            lines.append(f"Domain: {domain_label}.")
 
         # 3. Call out specific technologies so the AI focuses on them
         tech = a.get("tech_stack", [])
@@ -589,11 +708,25 @@ class PromptBuilder:
         else:
             lines.append("Assume a general audience — avoid unnecessary jargon.")
 
+        # 5. Variable injection — prompt AI to ask for external artifacts if not in context
+        if _ARTIFACT_RE.search(raw):
+            lines.append(
+                "Note: If the relevant code, files, or repository path are not already "
+                "in your context, ask the user to provide them before proceeding."
+            )
+
         return "\n".join(lines)
 
     # ── Task ──────────────────────────────────────────────────────────
 
-    def _task(self, raw: str, a: dict) -> str:
+    # Verbs that signal analysis intent even when task_type was mis-detected
+    _STRONG_ANALYZE_VERB_RE = re.compile(
+        r"^(?:look\s+\w+\s+|analyze\s+|analyse\s+|review\s+|examine\s+|inspect\s+|"
+        r"check\s+|assess\s+|evaluate\s+|audit\s+|investigate\s+|explore\s+|research\s+)",
+        re.I
+    )
+
+    def _task(self, raw: str, a: dict, mode: str = "coding") -> str:
         if a.get("multi_task"):
             task_sents = list(a.get("task_sentences", []))
             if task_sents:  # Guard: fall through to single template if list is empty
@@ -620,19 +753,56 @@ class PromptBuilder:
                     f"{i+1}. {_clean_task(s).rstrip('.')}."
                     for i, s in enumerate(task_sents)
                 )
-                return numbered
+                return "Address each of the following systematically:\n" + numbered
 
-        subject   = a.get("core_subject", raw.strip()[:120])
+        subject   = self._clean(self._clean_subject(raw, a))
         task_type = a["task_type"]
+
+        # Verb-replacement guard: if subject still starts with a strong analyze-class verb
+        # (e.g. _core_subject missed "look throughout"), reroute to analyze and strip the verb.
+        if task_type not in ("analyze", "fix") and self._STRONG_ANALYZE_VERB_RE.match(subject):
+            subject   = self._clean(self._STRONG_ANALYZE_VERB_RE.sub("", subject).strip())
+            task_type = "analyze"
+
         tech      = a.get("tech_stack", [])
-        tech_str  = f" using {', '.join(tech[:2])}" if tech else ""
+        # Only add tech suffix if none of the tech items are already in the subject
+        subject_lower = subject.lower()
+        novel_tech = [t for t in tech[:2] if t.lower() not in subject_lower]
+        tech_str  = f" using {', '.join(novel_tech)}" if novel_tech else ""
+
+        # Mode-aware analyze cover points
+        if mode == "general":
+            analyze_cover = (
+                "Cover: (1) strategic objectives and what success looks like, "
+                "(2) logic gaps or missing pieces, "
+                "(3) immediate action items."
+            )
+        else:
+            analyze_cover = (
+                "Cover: (1) current state and what's working, "
+                "(2) issues, gaps, or risks identified, "
+                "(3) specific actionable recommendations, "
+                "(4) priority order for improvements."
+            )
+
+        # Mode-aware build cover points
+        if mode == "general":
+            build_cover = (
+                "Cover: (1) strategic objectives and requirements, "
+                "(2) logical flow and component responsibilities, "
+                "(3) potential gaps or risks."
+            )
+        else:
+            build_cover = (
+                "Cover: (1) overall architecture and how components fit together, "
+                "(2) step-by-step implementation with concrete code examples, "
+                "(3) error handling and edge cases."
+            )
 
         expansions = {
             "build": (
                 f"Design and implement {subject}{tech_str}.\n"
-                f"Cover: (1) overall architecture and how components fit together, "
-                f"(2) step-by-step implementation with concrete code examples, "
-                f"(3) any configuration, auth, or security considerations."
+                f"{build_cover}"
             ),
             "design": (
                 f"Design {subject}{tech_str}.\n"
@@ -663,10 +833,7 @@ class PromptBuilder:
             ),
             "analyze": (
                 f"Analyze {subject}.\n"
-                f"Cover: (1) current state and what's working, "
-                f"(2) issues, gaps, or risks identified, "
-                f"(3) specific actionable recommendations, "
-                f"(4) priority order for improvements."
+                f"{analyze_cover}"
             ),
             "write": (
                 f"Write {subject}.\n"
@@ -681,7 +848,19 @@ class PromptBuilder:
         }
 
         if task_type in expansions:
-            return expansions[task_type]
+            result = expansions[task_type]
+            guidance = _REASONING_GUIDANCE.get(task_type)
+            if guidance:
+                result += f"\n\n{guidance}"
+            # Suggest decomposition for complex single tasks
+            is_complex = (
+                task_type in ("build", "design")
+                and (len(a.get("tech_stack", [])) >= 2 or not a.get("is_short"))
+                and not a.get("multi_task")
+            )
+            if is_complex:
+                result += "\n\nBreak your response into clearly labeled phases or steps."
+            return result
 
         # Fallback: use the core subject with light expansion
         return f"{raw.strip()}\n\nBe specific, thorough, and practical in your response."
@@ -699,19 +878,81 @@ class PromptBuilder:
             return "The user will provide: the content, code, or system to be analyzed."
         return ""
 
+    # ── Examples & demonstration ──────────────────────────────────────
+
+    def _examples(self, a: dict) -> str:
+        """Return task-type-specific guidance on examples/demonstration."""
+        examples_map = {
+            "build": (
+                "Show a minimal working example first, then build up to the full implementation.\n"
+                "Structure each component as: purpose \u2192 implementation \u2192 usage example."
+            ),
+            "write": (
+                "Include a brief example of the desired tone and style before writing the full piece."
+            ),
+            "explain": (
+                "Include at least one concrete example or analogy to ground the explanation.\n"
+                "For each concept: define it \u2192 show how it works \u2192 show when to use it."
+            ),
+            "fix": (
+                "Show the corrected code alongside the original so the difference is clear.\n"
+                "For each fix: problem \u2192 root cause \u2192 solution \u2192 verification."
+            ),
+            "compare": (
+                "Include a concrete scenario where each option excels to illustrate the trade-offs.\n"
+                "For each option: strengths \u2192 weaknesses \u2192 best use case."
+            ),
+        }
+        return examples_map.get(a.get("task_type", ""), "")
+
     @staticmethod
     def _clean(s: str) -> str:
         """Strip trailing punctuation so we can append our own cleanly."""
         return s.strip().rstrip(".!?,;:")
 
+    # Verbs that may survive _core_subject stripping when filler words preceded them
+    _RESIDUAL_VERB_RE = re.compile(
+        r"^(?:look\s+\w+\s+|analyze\s+|analyse\s+|review\s+|examine\s+|inspect\s+|"
+        r"check\s+|assess\s+|evaluate\s+|audit\s+|investigate\s+|explore\s+|research\s+)",
+        re.I
+    )
+
+    def _clean_subject(self, raw: str, a: dict) -> str:
+        """Post-process core_subject: strip residual verbs, trailing vague clauses, normalize entities."""
+        subject = a.get("core_subject", raw.strip()[:120])
+
+        # Defense: strip any leading action verb _core_subject missed (e.g. "look throughout"
+        # when "please" was stripped first, leaving the verb at the new start of string)
+        subject = self._RESIDUAL_VERB_RE.sub("", subject).strip()
+
+        # Strip trailing vague purpose clauses
+        subject = re.sub(
+            r"\s+and\s+(?:see\s+what\s+to\s+do\s+next|tell\s+me\s+what\s+to\s+do|"
+            r"let\s+me\s+know|find\s+out\s+what|figure\s+out\s+what|determine\s+what)"
+            r".*$",
+            "", subject, flags=re.I,
+        ).strip()
+
+        # Normalize common entity names
+        subject = re.sub(r"\bgithub\s+commits?\b", "GitHub commit history", subject, flags=re.I)
+        subject = re.sub(r"\bgithub\b", "GitHub", subject, flags=re.I)
+
+        # Fallback to raw if result is too short
+        if len(subject.strip()) < 8:
+            subject = raw.strip()[:80]
+
+        return subject.strip()
+
     # ── Output format ─────────────────────────────────────────────────
 
-    def _format(self, a: dict, explicit_fmt: str) -> str:
+    def _format(self, a: dict, explicit_fmt: str, mode: str = "general", raw: str = "") -> str:
+        # Priority 1: always honor explicit user format strictly
         if explicit_fmt:
             key = self._clean(explicit_fmt).lower()
             expanded = _FMT_EXPANSIONS.get(key) or _FMT_EXPANSIONS.get(key.rstrip("s"))
             return expanded if expanded else explicit_fmt
 
+        # Priority 2: multi-task fixed structure
         if a.get("multi_task"):
             domain = a["domains"][0] if a["domains"] else "general"
             section3 = _MULTITASK_SECTION3.get(domain, _MULTITASK_SECTION3["general"])
@@ -724,17 +965,8 @@ class PromptBuilder:
             )
 
         task_type = a["task_type"]
-        domain    = a["domains"][0] if a["domains"] else "general"
 
-        # Task-type-driven smart defaults
-        if task_type in ("build", "design") and a["is_technical"]:
-            return (
-                "- Section 1: High-level architecture (1–2 paragraphs)\n"
-                "- Section 2: Key components or tools in a markdown table "
-                "(columns: Name | Purpose | Notes)\n"
-                "- Section 3: Step-by-step implementation with code snippets\n"
-                "- Section 4: Security, edge cases, and gotchas as bullet points"
-            )
+        # Priority 3: task-type smart defaults (mode-independent)
         if task_type == "compare":
             return (
                 "- A markdown table comparing the options across relevant dimensions\n"
@@ -763,11 +995,40 @@ class PromptBuilder:
         if task_type == "write":
             return "Polished, complete prose. Ready to copy-paste as-is."
 
+        # Priority 4: mode-based defaults for build/design and general fallback
+        _SEC_RE  = re.compile(r"\b(security|auth|vulnerability|exploit|permission|token|encrypt)\b", re.I)
+        _ARCH_RE = re.compile(r"\b(architecture|microservice|design system|distributed|scalable|infra)\b", re.I)
+
+        if mode == "coding" and task_type in ("build", "design"):
+            parts = [
+                "Provide the response in the following structure:",
+                "1. Tech stack summary",
+                "2. Step-by-step implementation with code",
+                "3. Error handling approach",
+                "4. Documentation / usage notes",
+            ]
+            if _SEC_RE.search(raw):
+                parts.append(f"{len(parts)}. Security considerations")
+            if _ARCH_RE.search(raw):
+                parts.append(f"{len(parts)}. Architecture overview")
+            return "\n".join(parts)
+
+        if mode == "general":
+            domain = a["domains"][0] if a["domains"] else "general"
+            aud_label = "the target audience"
+            return (
+                "Structure your response as:\n"
+                "1. Clear goal restatement\n"
+                "2. Main answer / recommendation\n"
+                f"3. Key considerations for {aud_label}\n"
+                "4. Next steps or action items"
+            )
+
         return "Clear, well-structured prose with headers where appropriate."
 
     # ── Constraints ───────────────────────────────────────────────────
 
-    def _constraints(self, raw: str, a: dict, tone: str) -> str:
+    def _constraints(self, raw: str, a: dict, tone: str, mode: str = "general") -> str:
         parts = []
 
         # Preserve explicit constraints from original (sentence-level fact/directive split)
@@ -810,9 +1071,23 @@ class PromptBuilder:
         if a["task_type"] == "explain" and not a["is_technical"]:
             parts.append("Avoid unexplained jargon. Define technical terms on first use.")
 
-        # Fallback
+        # Ask for clarification when prompt is vague or ambiguous
+        if a["is_short"] or a["task_type"] == "general":
+            parts.append("If any requirements are unclear or ambiguous, ask for clarification before proceeding.")
+
+        # Conciseness for non-writing tasks
+        if a["task_type"] not in ("write", "list"):
+            parts.append("Be direct and concise — avoid filler, repetition, and unnecessary caveats.")
+
+        # Ensure at least 2 strong constraint bullets
         if not parts:
-            parts.append("Be specific and actionable. Avoid vague generalities.")
+            parts.extend(_STRONGER_DEFAULTS)
+        elif len(parts) < 2:
+            for default in _STRONGER_DEFAULTS:
+                if len(parts) >= 2:
+                    break
+                if default not in parts:
+                    parts.append(default)
 
         return "\n".join(f"- {p}" for p in parts)
 
@@ -826,6 +1101,7 @@ class GuideMeDialog(tk.Toplevel):
         ("audience",   "Who is the target audience?",              "e.g. junior developer, non-technical user"),
         ("output_fmt", "What format should the output be in?",     "e.g. bullet points, JSON, markdown table"),
         ("tone",       "Any tone or style constraints?",           "e.g. concise, step-by-step, max 200 words"),
+        ("mode",       "What mode should the output use?",         "e.g. coding, general"),
     ]
 
     def __init__(self, parent, on_complete):
@@ -951,6 +1227,7 @@ _FIELDS = [
     ("audience",   "Audience", "junior dev, non-technical…"),
     ("output_fmt", "Format",   "bullets, JSON, table…"),
     ("tone",       "Tone",     "concise, step-by-step…"),
+    ("mode",       "Mode",     "coding, general…"),
 ]
 
 _ELEMENTS = [
@@ -959,6 +1236,7 @@ _ELEMENTS = [
     ("has_task",          "Task"),
     ("has_output_format", "Format"),
     ("has_constraints",   "Constraints"),
+    ("mode",              "Mode"),
 ]
 
 
@@ -1049,9 +1327,13 @@ class PromptImproverApp:
         opts = tk.Frame(p, bg=C["surface"], padx=14, pady=10)
         opts.pack(fill=tk.X, padx=16, pady=(0, 12))
 
+        n = len(_FIELDS)
         for col, (key, label, ph) in enumerate(_FIELDS):
+            is_last_lone = (col == n - 1) and (n % 2 == 1)
             cell = tk.Frame(opts, bg=C["surface"])
-            cell.grid(row=col//2, column=col%2, sticky="ew",
+            cell.grid(row=col//2, column=col%2,
+                      columnspan=2 if is_last_lone else 1,
+                      sticky="ew",
                       padx=(0 if col%2==0 else 6, 6 if col%2==0 else 0),
                       pady=4)
             tk.Label(cell, text=label, font=F["xs"],
@@ -1249,6 +1531,12 @@ class PromptImproverApp:
 
         analysis = PromptAnalyzer().analyze(raw)
         meta     = {k: self._get(k) for k in self._entries}
+        # Inject inferred mode for badge display
+        mode_override = meta.get("mode", "").strip().lower()
+        analysis["_inferred_mode"] = (
+            mode_override if mode_override in ("coding", "general")
+            else ("coding" if analysis.get("is_technical") else "general")
+        )
         result   = PromptBuilder().build(raw, analysis, meta)
         self._improved_text = result
 
@@ -1256,10 +1544,13 @@ class PromptImproverApp:
         self._output_text.delete("1.0", tk.END)
         self._output_text.insert("1.0", result)
 
-        # Style [SECTION] headers in accent color and "---" dividers in muted
+        # Style [SECTION] headers and <xml> tags in accent color, "---" dividers in muted
         for i, line in enumerate(result.split("\n"), start=1):
             stripped = line.strip()
-            if stripped.startswith("[") and stripped.endswith("]"):
+            if (stripped.startswith("[") and stripped.endswith("]")) or \
+               (stripped.startswith("<") and not stripped.startswith("</")):
+                self._output_text.tag_add("section_hdr", f"{i}.0", f"{i}.end")
+            elif stripped.startswith("</"):
                 self._output_text.tag_add("section_hdr", f"{i}.0", f"{i}.end")
             elif stripped == "---":
                 self._output_text.tag_add("divider", f"{i}.0", f"{i}.end")
@@ -1291,13 +1582,22 @@ class PromptImproverApp:
 
     def _update_badges(self, a: dict):
         for key, label in _ELEMENTS:
-            present = a.get(key, False)
-            sym = "✓" if present else "✗"
-            suf = "" if present else "  added"
-            bg = C["ok_dim"]   if present else C["warn_dim"]
-            fg = C["ok"]       if present else C["warn"]
-            self._badge_frames[key].config(bg=bg)
-            self._badge_labels[key].config(text=f"{sym}  {label}{suf}", bg=bg, fg=fg)
+            if key == "mode":
+                mode_val = a.get("_inferred_mode", "general")
+                is_coding = (mode_val == "coding")
+                text = f"◈  {label}: {'Coding' if is_coding else 'General'}"
+                bg = C["ok_dim"]  if is_coding else C["surface2"]
+                fg = C["accent"]  if is_coding else C["text2"]
+                self._badge_frames[key].config(bg=bg)
+                self._badge_labels[key].config(text=text, bg=bg, fg=fg)
+            else:
+                present = a.get(key, False)
+                sym = "✓" if present else "✗"
+                suf = "" if present else "  added"
+                bg = C["ok_dim"]   if present else C["warn_dim"]
+                fg = C["ok"]       if present else C["warn"]
+                self._badge_frames[key].config(bg=bg)
+                self._badge_labels[key].config(text=f"{sym}  {label}{suf}", bg=bg, fg=fg)
 
         notices = []
         if a.get("is_short"):
