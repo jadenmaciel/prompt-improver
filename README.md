@@ -29,7 +29,13 @@ git clone https://github.com/jadenmaciel/prompt-improver.git
 cd prompt-improver
 python3.12 -m venv venv
 source venv/bin/activate
-pip install customtkinter
+python -m pip install customtkinter
+```
+
+The classic Tkinter app uses only the Python standard library. The modern desktop app needs `customtkinter`. The web UI needs `streamlit`, and the test suite needs `pytest`:
+
+```bash
+python -m pip install streamlit pytest
 ```
 
 ## Running
@@ -76,9 +82,9 @@ docs/             # Specs and design notes
 
 ```bash
 source venv/bin/activate
-pytest
+python -m pytest
 ```
 
 ## License
 
-MIT
+[MIT](LICENSE)

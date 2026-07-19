@@ -13,11 +13,11 @@ python3.12 app.py
 brew install python-tk@3.12
 ```
 
-There are no external dependencies — stdlib only.
+The classic `app.py` UI uses only the standard library. `modern_app.py` needs `customtkinter`, `streamlit_app.py` needs `streamlit`, and the test suite needs `pytest`.
 
 ## Architecture
 
-Single-file app (`app.py`, ~1050 lines). All logic, UI, and knowledge bases live in one file with no imports outside stdlib.
+The core logic, classic UI, and knowledge bases live in `app.py`. Optional interfaces live in `modern_app.py` and `streamlit_app.py`.
 
 ### Module-level globals (top of file)
 
